@@ -1,6 +1,76 @@
 #ifndef STRADDLE_GRID_ENGINE_MQH
 #define STRADDLE_GRID_ENGINE_MQH
 
+input group "2c. Grid Refill"
+input double InpGridRefillOppositeMoveUSD           = 2.0;     // refill empty slot only after price moves opposite by this USD amount
+input bool            InpGridRefillUseAtrDistance   = true;    // true=use ATR distance for refill gate; false=use fixed USD above
+input ENUM_TIMEFRAMES InpGridRefillAtrTimeframe     = PERIOD_M15;
+input int             InpGridRefillAtrPeriod        = 14;
+input double          InpGridRefillAtrMultiplier    = 1.0;
+input bool            InpGridRefillAtrUseClosedBar  = true;
+
+input group "2d. Cycle Anchor"
+input double InpCycleAnchorModuloUSD                = 30.0;    // 0=use current mid; >0 snap/wait for price modulo step
+
+int g_gridRefillAtrHandle = INVALID_HANDLE;
+
+bool ValidateGridInputs()
+{
+   if(InpGridRefillOppositeMoveUSD < 0.0 || InpCycleAnchorModuloUSD < 0.0)
+      return false;
+   if(InpGridRefillUseAtrDistance &&
+      (InpGridRefillAtrPeriod < 1 || InpGridRefillAtrMultiplier <= 0.0))
+      return false;
+   return true;
+}
+
+bool InitGridEngine()
+{
+   if(!InpGridRefillUseAtrDistance)
+      return true;
+
+   g_gridRefillAtrHandle = iATR(_Symbol, InpGridRefillAtrTimeframe, InpGridRefillAtrPeriod);
+   if(g_gridRefillAtrHandle == INVALID_HANDLE)
+   {
+      Print("Straddle: failed to create ATR handle for grid refill");
+      return false;
+   }
+   return true;
+}
+
+void ReleaseGridEngine()
+{
+   if(g_gridRefillAtrHandle != INVALID_HANDLE)
+   {
+      IndicatorRelease(g_gridRefillAtrHandle);
+      g_gridRefillAtrHandle = INVALID_HANDLE;
+   }
+}
+
+double CurrentGridRefillAtr()
+{
+   if(!InpGridRefillUseAtrDistance || g_gridRefillAtrHandle == INVALID_HANDLE)
+      return 0.0;
+
+   double values[1];
+   int shift = InpGridRefillAtrUseClosedBar ? 1 : 0;
+   if(CopyBuffer(g_gridRefillAtrHandle, 0, shift, 1, values) != 1)
+      return 0.0;
+
+   return values[0];
+}
+
+double GridRefillDistance()
+{
+   if(InpGridRefillUseAtrDistance)
+   {
+      double atr = CurrentGridRefillAtr();
+      if(atr > 0.0)
+         return atr * InpGridRefillAtrMultiplier;
+   }
+   return InpGridRefillOppositeMoveUSD;
+}
+
 double CalculateStep(const double anchor)
 {
    double step = InpReferenceSpacingUSD;
@@ -19,9 +89,31 @@ double SlotPrice(const int side, const int level)
    return NormalizeDouble(g_anchor + side * level * g_step, _Digits);
 }
 
+double CycleAnchorFromPrice(const double price)
+{
+   if(InpCycleAnchorModuloUSD <= 0.0)
+      return NormalizeDouble(price, _Digits);
+
+   double snapped = MathRound(price / InpCycleAnchorModuloUSD) * InpCycleAnchorModuloUSD;
+   return NormalizeDouble(snapped, _Digits);
+}
+
+bool CycleAnchorReady(const double anchor, const double step)
+{
+   if(InpCycleAnchorModuloUSD <= 0.0)
+      return true;
+   if(anchor <= 0.0 || step <= 0.0)
+      return false;
+
+   double firstBuy = NormalizeDouble(anchor + step, _Digits);
+   double firstSell = NormalizeDouble(anchor - step, _Digits);
+   return PendingPriceValid(1, firstBuy) && PendingPriceValid(-1, firstSell);
+}
+
 bool RefillOppositeMovePassed(const int side, const double slotPrice)
 {
-   if(InpGridRefillOppositeMoveUSD <= 0.0)
+   double refillDistance = GridRefillDistance();
+   if(refillDistance <= 0.0)
       return true;
 
    MqlTick tick;
@@ -29,8 +121,8 @@ bool RefillOppositeMovePassed(const int side, const double slotPrice)
       return false;
 
    if(side > 0)
-      return tick.ask <= slotPrice - InpGridRefillOppositeMoveUSD;
-   return tick.bid >= slotPrice + InpGridRefillOppositeMoveUSD;
+      return tick.ask <= slotPrice - refillDistance;
+   return tick.bid >= slotPrice + refillDistance;
 }
 
 bool HasSlot(const int side, const int level)
@@ -142,10 +234,20 @@ void StartCycle()
    if(mid <= 0.0)
       return;
 
-   g_anchor = NormalizeDouble(mid, _Digits);
-   g_step = CalculateStep(g_anchor);
-   if(g_step <= 0.0)
+   double candidateAnchor = CycleAnchorFromPrice(mid);
+   double candidateStep = CalculateStep(candidateAnchor);
+   if(candidateStep <= 0.0)
       return;
+
+   if(!CycleAnchorReady(candidateAnchor, candidateStep))
+   {
+      g_status = StringFormat("Waiting for cycle anchor %.3f, mid %.3f",
+                              candidateAnchor, mid);
+      return;
+   }
+
+   g_anchor = candidateAnchor;
+   g_step = candidateStep;
 
    g_cycleStartBalance = AccountInfoDouble(ACCOUNT_BALANCE);
    g_cycleStartEquity = AccountInfoDouble(ACCOUNT_EQUITY);

@@ -6,7 +6,7 @@
 #property version   "2.00"
 
 #include "modules/Types.mqh"
-#include "modules/_Inputs.mqh"
+#include "modules/Inputs.mqh"
 #include "modules/State.mqh"
 #include "modules/Broker.mqh"
 #include "modules/ExposureGuard.mqh"
@@ -60,8 +60,14 @@ int OnInit()
 {
    if(!ValidateInputs())
       return INIT_PARAMETERS_INCORRECT;
+   if(!ValidateGridInputs() || !ValidateTrailingInputs())
+      return INIT_PARAMETERS_INCORRECT;
 
    if(!InitBroker())
+      return INIT_FAILED;
+   if(!InitGridEngine())
+      return INIT_FAILED;
+   if(!InitTrailingEngine())
       return INIT_FAILED;
 
    InitDailyLimits();
@@ -73,6 +79,8 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   ReleaseGridEngine();
+   ReleaseTrailingEngine();
    Comment("");
 }
 
@@ -166,4 +174,3 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
 }
 
 //+------------------------------------------------------------------+
-

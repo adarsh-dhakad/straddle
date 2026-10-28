@@ -1,4 +1,3 @@
-# straddle
 # XAUUSD Straddle Modular Architecture
 
 Date: 2026-08-22
@@ -497,11 +496,47 @@ gridMin
 gridMax
 ```
 
+### `CycleAnchorFromPrice(price)`
+
+Purpose:
+
+- Prevent random cycle anchors.
+- If `InpCycleAnchorModuloUSD > 0`, snap the candidate anchor to the nearest modulo price.
+- If `InpCycleAnchorModuloUSD = 0`, use the current mid-price as before.
+
+Formula:
+
+```text
+candidateAnchor = round(currentMid / InpCycleAnchorModuloUSD) * InpCycleAnchorModuloUSD
+```
+
+Example:
+
+```text
+InpCycleAnchorModuloUSD = 30
+currentMid = 4589.64
+candidateAnchor = 4590.00
+```
+
+### `CycleAnchorReady(anchor, step)`
+
+Purpose:
+
+- Wait until price is close enough to the snapped anchor that level 1 buy and level 1 sell stop orders are both valid.
+- Avoid starting a cycle from an anchor that is too far away from current price.
+
+Rule:
+
+```text
+first buy  = anchor + gridStep must be a valid buy stop
+first sell = anchor - gridStep must be a valid sell stop
+```
+
 ### `StartCycle()`
 
 Purpose:
 
-- Create new cycle state.
+- Create new cycle state only after the anchor is ready.
 - Store balance/equity.
 - Build grid plan.
 - Ask `GridEngine.PlaceInitialGrid()` to place base orders.
@@ -525,16 +560,23 @@ Purpose:
 
 - Replace missing base pending orders only when allowed.
 - Do not refill immediately at the same breakout area.
-- Require price to move opposite from the empty slot by `InpGridRefillOppositeMoveUSD`.
+- Require price to move opposite from the empty slot by the refill distance.
+- By default the refill distance is ATR-based:
+
+```text
+refillDistance = M15 ATR(14) * InpGridRefillAtrMultiplier
+```
+
+- If `InpGridRefillUseAtrDistance=false`, or if ATR is not available yet, the EA falls back to `InpGridRefillOppositeMoveUSD`.
 
 Refill gate:
 
 ```text
-empty buy slot refills only if ask <= buySlotPrice - InpGridRefillOppositeMoveUSD
-empty sell slot refills only if bid >= sellSlotPrice + InpGridRefillOppositeMoveUSD
+empty buy slot refills only if ask <= buySlotPrice - refillDistance
+empty sell slot refills only if bid >= sellSlotPrice + refillDistance
 ```
 
-With default `InpGridRefillOppositeMoveUSD = 2.0`, a buy level at `4610.00` can be refilled only after ask is `4608.00` or lower. A sell level at `4590.00` can be refilled only after bid is `4592.00` or higher.
+With default `InpGridRefillUseAtrDistance=true`, `InpGridRefillAtrTimeframe=M15`, `InpGridRefillAtrPeriod=14`, and `InpGridRefillAtrMultiplier=1.0`, if ATR is `7.50`, a buy level at `4610.00` can be refilled only after ask is `4602.50` or lower. A sell level at `4590.00` can be refilled only after bid is `4597.50` or higher.
 
 Should not replace:
 
@@ -631,25 +673,61 @@ Purpose:
 
 - Iterate positions.
 - Find one position eligible for profitable trailing.
+- Use ATR-based distance when enabled.
 - Modify only one position per pass to reduce broker request pressure.
+
+Default ATR settings:
+
+```text
+InpUseAtrTrailing = true
+InpTrailAtrTimeframe = PERIOD_M15
+InpTrailAtrPeriod = 14
+InpTrailAtrArmMultiplier = 1.0
+InpTrailAtrDistanceMultiplier = 1.0
+InpTrailAtrUseClosedBar = true
+```
 
 ### `CanArmTrailing(position)`
 
-Formula:
+ATR formula when enabled and ATR is available:
 
 Buy:
 
 ```text
-bid - entry >= profitGridsToArmTrail * gridStep
+bid - entry >= ATR * InpTrailAtrArmMultiplier
 ```
 
 Sell:
 
 ```text
-entry - ask >= profitGridsToArmTrail * gridStep
+entry - ask >= ATR * InpTrailAtrArmMultiplier
+```
+
+Fallback formula:
+
+```text
+favorable move >= profitGridsToArmTrail * gridStep
 ```
 
 ### `ProposedTrailingSL(position)`
+
+ATR formula when enabled and ATR is available:
+
+Buy:
+
+```text
+sl = bid - ATR * InpTrailAtrDistanceMultiplier
+sl must be > entry
+```
+
+Sell:
+
+```text
+sl = ask + ATR * InpTrailAtrDistanceMultiplier
+sl must be < entry
+```
+
+Fallback formula:
 
 Buy:
 

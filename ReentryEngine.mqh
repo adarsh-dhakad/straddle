@@ -34,7 +34,7 @@ void HandleTrailingStopExit(const ulong deal)
    {
       // Do not create extra opposite-side re-entry orders. The closed base
       // slot is now empty, and GridEngine will refill only that base slot
-      // if its price is still valid for the current market.
+      // if its price is still valid and the ATR/fixed-distance refill gate passes.
       g_status = StringFormat("Trailing banked %s level %d; refill base grid only",
                               exitedSide > 0 ? "BUY" : "SELL", level);
    }
